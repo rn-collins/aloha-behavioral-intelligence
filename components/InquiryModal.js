@@ -102,6 +102,7 @@ export default function InquiryModal({ source = 'unknown' }) {
 
       {/* ── MODAL ── */}
       <div
+        id={`ca-modal-${source}`}
         role="dialog"
         aria-modal="true"
         aria-label="Inquiry form"
