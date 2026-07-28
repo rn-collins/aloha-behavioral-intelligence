@@ -141,7 +141,7 @@ export default function InquiryModal({ source = 'unknown' }) {
                   Let&apos;s talk.
                 </div>
                 <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: '12.5px', color: 'rgba(28,27,31,0.5)' }}>
-                  RN Collins · collins.ra@northeastern.edu
+                  RN Collins
                 </div>
               </div>
               <button
@@ -210,7 +210,7 @@ export default function InquiryModal({ source = 'unknown' }) {
             {/* Submit */}
             {status === 'error' && (
               <div style={{ fontFamily: 'Manrope, sans-serif', fontSize: '12px', color: '#C24A2E', marginBottom: '10px' }}>
-                Something went wrong. Email me directly at collins.ra@northeastern.edu
+                Something went wrong. Please try again in a moment.
               </div>
             )}
             <button
