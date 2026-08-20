@@ -1,9 +1,4 @@
 node_modules
 .next
-.env.local
-node_modules/
-.next/
-.env
-.env.local
-dist/
-build/
+.vercel
+.env*

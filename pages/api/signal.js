@@ -1,146 +1,38 @@
-// /pages/api/signal.js
-// Sources: Wikipedia pageview + Reddit JSON + Google News RSS + Google Trends (unofficial)
-// Cache: Upstash Redis REST, 2hr TTL per culture moment
-
-async function redisGet(key) {
-  try {
-    const r = await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` }
-    })
-    const d = await r.json()
-    return d.result ? JSON.parse(d.result) : null
-  } catch { return null }
+const CONFIG = {
+  bridgerton: { wiki: 'Bridgerton', reddit: 'femalefashionadvice', query: 'bridgerton fashion brand', news: 'Bridgerton brand partnership' },
+  mj: { wiki: 'Michael_Jackson', reddit: 'malefashionadvice', query: 'michael jackson biopic style', news: 'Michael Jackson biopic fashion' },
+  yellowstone: { wiki: 'Yellowstone_(American_TV_series)', reddit: 'television', query: 'yellowstone western aesthetic', news: 'Yellowstone fashion tourism' },
+  euphoria: { wiki: 'Euphoria_(American_TV_series)', reddit: 'femalefashionadvice', query: 'euphoria fashion', news: 'Euphoria fashion' }
 }
-
-async function redisSet(key, value, ttl) {
-  try {
-    await fetch(`${process.env.UPSTASH_REDIS_REST_URL}/set/${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify([JSON.stringify(value), 'EX', ttl])
-    })
-  } catch {}
+async function timed(url) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000)
+  try { return await fetch(url, { headers: { 'User-Agent': 'AlohaAIConsulting/2.0 (public-signal-research)' }, signal: controller.signal }) }
+  finally { clearTimeout(timer) }
 }
-
-const MOMENTS_CONFIG = {
-  bridgerton: {
-    label: 'Bridgerton universe',
-    wikiArticle: 'Bridgerton',
-    redditQuery: 'bridgerton fashion brand',
-    redditSub: 'femalefashionadvice',
-    newsQuery: 'Bridgerton brand partnership 2026',
-    trendsKeyword: 'bridgerton fashion'
-  },
-  mj: {
-    label: 'Michael Jackson biopic',
-    wikiArticle: 'Michael_Jackson',
-    redditQuery: 'michael jackson biopic style',
-    redditSub: 'malefashionadvice',
-    newsQuery: 'Michael Jackson biopic fashion trend 2026',
-    trendsKeyword: 'michael jackson style 2026'
-  },
-  yellowstone: {
-    label: 'Yellowstone / Dutton Ranch',
-    wikiArticle: 'Yellowstone_(TV_series)',
-    redditQuery: 'yellowstone fashion western aesthetic',
-    redditSub: 'television',
-    newsQuery: 'Dutton Ranch Yellowstone fashion tourism 2026',
-    trendsKeyword: 'dutton ranch western aesthetic'
-  },
-  euphoria: {
-    label: 'Euphoria S3 — Feral Glam',
-    wikiArticle: 'Euphoria_(American_TV_series)',
-    redditQuery: 'euphoria fashion maddy perez feral glam',
-    redditSub: 'femalefashionadvice',
-    newsQuery: 'Euphoria season 3 fashion feral glam 2026',
-    trendsKeyword: 'feral glam euphoria'
-  }
-}
-
-async function fetchWiki(article) {
-  try {
-    const end = new Date()
-    const start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    const fmt = d => d.toISOString().slice(0,10).replace(/-/g,'')
-    const r = await fetch(
-      `https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/all-agents/${encodeURIComponent(article)}/daily/${fmt(start)}/${fmt(end)}`,
-      { headers: { 'User-Agent': 'AlohaAIConsulting/1.0' } }
-    )
-    if (!r.ok) return null
-    const d = await r.json()
-    const items = d.items || []
-    const total = items.reduce((s, i) => s + (i.views || 0), 0)
-    const daily = Math.round(total / (items.length || 1))
-    // Compare to prior week for momentum
-    const recent = items.slice(-3).reduce((s,i) => s+(i.views||0),0) / 3
-    const earlier = items.slice(0,3).reduce((s,i) => s+(i.views||0),0) / 3
-    const momentum = earlier > 0 ? Math.round(((recent - earlier) / earlier) * 100) : 0
-    return { daily, total, momentum, days: items.length }
-  } catch { return null }
-}
-
-async function fetchReddit(query, sub) {
-  try {
-    const r = await fetch(
-      `https://www.reddit.com/r/${sub}/search.json?q=${encodeURIComponent(query)}&sort=hot&limit=10&t=week`,
-      { headers: { 'User-Agent': 'AlohaAIConsulting/1.0' } }
-    )
-    if (!r.ok) return null
-    const d = await r.json()
-    const posts = d.data?.children || []
-    return {
-      postCount: posts.length,
-      totalScore: posts.reduce((s, p) => s + (p.data?.score || 0), 0),
-      topPost: posts[0]?.data?.title?.slice(0, 100)
-    }
-  } catch { return null }
-}
-
-async function fetchNews(query) {
-  try {
-    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en-US&gl=US&ceid=US:en`
-    const r = await fetch(url, { headers: { 'User-Agent': 'AlohaAIConsulting/1.0' } })
-    if (!r.ok) return []
-    const xml = await r.text()
-    const items = []
-    const matches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g)
-    for (const m of matches) {
-      const b = m[1]
-      const title = b.match(/<title>(.*?)<\/title>/)?.[1]?.replace(/<[^>]+>/g, '').trim()
-      const source = b.match(/<source.*?>(.*?)<\/source>/)?.[1]?.trim()
-      const date = b.match(/<pubDate>(.*?)<\/pubDate>/)?.[1]?.trim()
-      if (title) items.push({ title, source, date })
-    }
-    return items.slice(0, 5)
-  } catch { return [] }
-}
-
+function clean(value = '') { return value.replace(/<!\[CDATA\[|\]\]>/g, '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').trim() }
 export default async function handler(req, res) {
-  const { moment } = req.query
-  if (!moment || !MOMENTS_CONFIG[moment]) {
-    return res.status(400).json({ error: 'Invalid moment. Use: bridgerton, mj, yellowstone, euphoria' })
-  }
-
-  const cacheKey = `aloha:bil:${moment}:v2`
-  const cached = await redisGet(cacheKey)
-  if (cached) return res.status(200).json(cached)
-
-  const cfg = MOMENTS_CONFIG[moment]
-  const [wiki, reddit, news] = await Promise.allSettled([
-    fetchWiki(cfg.wikiArticle),
-    fetchReddit(cfg.redditQuery, cfg.redditSub),
-    fetchNews(cfg.newsQuery)
+  if (req.method !== 'GET') { res.setHeader('Allow', 'GET'); return res.status(405).json({ error: 'Method not allowed' }) }
+  const cfg = CONFIG[req.query.moment]
+  if (!cfg) return res.status(400).json({ error: 'Invalid moment' })
+  res.setHeader('Cache-Control', 's-maxage=7200, stale-while-revalidate=86400')
+  const end = new Date(), start = new Date(Date.now() - 6 * 864e5), fmt = date => date.toISOString().slice(0, 10).replace(/-/g, '')
+  const [w, r, n] = await Promise.allSettled([
+    timed(`https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article/en.wikipedia/all-access/user/${encodeURIComponent(cfg.wiki)}/daily/${fmt(start)}/${fmt(end)}`),
+    timed(`https://www.reddit.com/r/${cfg.reddit}/search.json?q=${encodeURIComponent(cfg.query)}&restrict_sr=1&sort=relevance&t=week&limit=10`),
+    timed(`https://news.google.com/rss/search?q=${encodeURIComponent(cfg.news)}&hl=en-US&gl=US&ceid=US:en`)
   ])
-
-  const payload = {
-    moment,
-    label: cfg.label,
-    wiki: wiki.status === 'fulfilled' ? wiki.value : null,
-    reddit: reddit.status === 'fulfilled' ? reddit.value : null,
-    news: news.status === 'fulfilled' ? news.value : [],
-    fetchedAt: new Date().toISOString()
-  }
-
-  await redisSet(cacheKey, payload, 60 * 60 * 2) // 2hr cache per moment
-  return res.status(200).json(payload)
+  let wiki = null, reddit = null, news = []
+  try { if (w.status === 'fulfilled' && w.value.ok) { const data = await w.value.json(), items = data.items || []; wiki = { daily: Math.round(items.reduce((sum, item) => sum + (item.views || 0), 0) / (items.length || 1)), days: items.length } } } catch {}
+  try { if (r.status === 'fulfilled' && r.value.ok) { const data = await r.value.json(), posts = data.data?.children || []; reddit = { postCount: posts.length, totalScore: posts.reduce((sum, post) => sum + (post.data?.score || 0), 0), subreddit: cfg.reddit } } } catch {}
+  try {
+    if (n.status === 'fulfilled' && n.value.ok) {
+      const xml = await n.value.text()
+      for (const match of xml.matchAll(/<item>([\s\S]*?)<\/item>/g)) {
+        const block = match[1], title = clean(block.match(/<title>([\s\S]*?)<\/title>/)?.[1]), link = clean(block.match(/<link>([\s\S]*?)<\/link>/)?.[1]), source = clean(block.match(/<source.*?>([\s\S]*?)<\/source>/)?.[1]), date = clean(block.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1])
+        if (title) news.push({ title, link, source, date })
+      }
+      news = news.slice(0, 5)
+    }
+  } catch {}
+  return res.status(200).json({ moment: req.query.moment, wiki, reddit, news, fetchedAt: new Date().toISOString(), methodVersion: '2026-08-19' })
 }
